@@ -4,18 +4,21 @@ import api from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, Input, Label, Alert } from '@/components/ui/index';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { Vote, Plus, X } from 'lucide-react';
+import { Vote, Plus, CheckCircle2, Users } from 'lucide-react';
 
 export default function PollsPage() {
   const { user } = useAuth();
   const [polls, setPolls] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newPoll, setNewPoll] = useState({ question: '', options: ['', ''] });
-  const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
-  const [voting, setVoting] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [newPollQ, setNewPollQ] = useState('');
+  const [newPollOptions, setNewPollOptions] = useState(['', '']);
+  const [newPollEnds, setNewPollEnds] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+
+  const isSecretariat = user?.role === 'secretariat';
+  const canManage = ['secretariat', 'admin'].includes(user?.role || '');
 
   const fetchPolls = async () => {
     const { data } = await api.get('/polls');
@@ -25,165 +28,182 @@ export default function PollsPage() {
 
   useEffect(() => { fetchPolls(); }, []);
 
-  const hasVoted = (poll: any) => poll.options.some((o: any) =>
-    o.votes.includes(user?.id)
-  );
-
-  const totalVotes = (poll: any) => poll.options.reduce((s: number, o: any) => s + o.votes.length, 0);
-
-  const handleVote = async (pollId: string, optionIndex: number) => {
-    setVoting(pollId);
+  const handleVote = async (pollId: string, optionIdx: number) => {
     try {
-      const { data } = await api.post(`/polls/${pollId}/vote`, { optionIndex });
-      setPolls(polls.map(p => p._id === pollId ? data : p));
+      await api.post(`/polls/${pollId}/vote`, { optionIndex: optionIdx });
+      fetchPolls(); // re-fetch so hasVoted is derived from server data
     } catch (e: any) {
-      alert(e.response?.data?.message || 'Vote failed');
-    } finally { setVoting(null); }
+      setError(e.response?.data?.message || 'Vote failed');
+    }
   };
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    const opts = newPoll.options.filter(o => o.trim());
-    if (opts.length < 2) { setError('Add at least 2 options'); return; }
+  const handleCreate = async () => {
     setCreating(true);
     try {
-      const { data } = await api.post('/polls', { question: newPoll.question, options: opts });
-      setPolls([data, ...polls]);
-      setShowCreate(false);
-      setNewPoll({ question: '', options: ['', ''] });
-    } catch (e: any) { setError(e.response?.data?.message || 'Failed'); }
+      const opts = newPollOptions.filter(o => o.trim());
+      await api.post('/polls', { question: newPollQ, options: opts.map(o => ({ text: o })), endsAt: newPollEnds || undefined });
+      setNewPollQ(''); setNewPollOptions(['', '']); setNewPollEnds(''); setShowCreate(false);
+      fetchPolls();
+    } catch (e: any) { setError(e.response?.data?.message || 'Create failed'); }
     finally { setCreating(false); }
   };
 
-  const COLORS = ['#059669','#0891b2','#7c3aed','#d97706','#dc2626','#db2777'];
+  const handleToggle = async (pollId: string) => {
+    await api.patch(`/polls/${pollId}/toggle`);
+    fetchPolls();
+  };
 
-  if (loading) return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin" /></div>;
+  const getTotal = (poll: any) => poll.options.reduce((s: number, o: any) => s + (o.votes?.length || 0), 0);
+
+  // Derive hasVoted from server data — survives page refresh
+  const userHasVoted = (poll: any): boolean => {
+    if (!user) return false;
+    return poll.options.some((o: any) =>
+      Array.isArray(o.votes) && o.votes.some((v: any) =>
+        (typeof v === 'string' ? v : v?._id?.toString() || v?.toString()) === user.id
+      )
+    );
+  };
+
+  const getMyVoteIndex = (poll: any): number => {
+    if (!user) return -1;
+    return poll.options.findIndex((o: any) =>
+      Array.isArray(o.votes) && o.votes.some((v: any) =>
+        (typeof v === 'string' ? v : v?._id?.toString() || v?.toString()) === user.id
+      )
+    );
+  };
+
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <div className="w-8 h-8 border-4 border-slate-900 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
 
   return (
-    <div className="p-8">
+    <div className="p-8 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2"><Vote size={24} />Polls</h1>
-          <p className="text-slate-500 mt-1">Vote and see what your colleagues think</p>
+          <h1 className="text-2xl font-bold text-slate-900">Polls</h1>
+          <p className="text-slate-500 mt-1">
+            {isSecretariat ? 'View poll results and manage polls' : 'Vote on active polls and view results'}
+          </p>
         </div>
-        {['secretariat', 'admin'].includes(user?.role || '') && (
+        {canManage && (
           <Button onClick={() => setShowCreate(!showCreate)} variant={showCreate ? 'outline' : 'default'}>
-            <Plus size={16} /> Create Poll
+            <Plus size={16} className="mr-1" /> {showCreate ? 'Cancel' : 'New Poll'}
           </Button>
         )}
       </div>
 
+      {error && <Alert variant="danger" className="mb-4">{error}</Alert>}
+
+      {/* Create form — secretariat and admin */}
       {showCreate && (
         <Card className="mb-6 border-emerald-200">
-          <CardHeader><CardTitle className="text-base">New Poll</CardTitle></CardHeader>
-          <CardContent>
-            <form onSubmit={handleCreate} className="space-y-4">
-              {error && <Alert variant="danger">{error}</Alert>}
-              <div className="space-y-1">
-                <Label>Question</Label>
-                <Input value={newPoll.question} onChange={e => setNewPoll({...newPoll, question: e.target.value})} placeholder="What do you want to ask?" required />
-              </div>
-              <div className="space-y-2">
-                <Label>Options</Label>
-                {newPoll.options.map((opt, i) => (
-                  <div key={i} className="flex gap-2">
-                    <Input value={opt} onChange={e => { const o = [...newPoll.options]; o[i] = e.target.value; setNewPoll({...newPoll, options: o}); }} placeholder={`Option ${i + 1}`} />
-                    {newPoll.options.length > 2 && (
-                      <button type="button" onClick={() => setNewPoll({...newPoll, options: newPoll.options.filter((_, j) => j !== i)})}>
-                        <X size={16} className="text-slate-400 hover:text-red-500" />
-                      </button>
-                    )}
-                  </div>
-                ))}
-                {newPoll.options.length < 6 && (
-                  <button type="button" onClick={() => setNewPoll({...newPoll, options: [...newPoll.options, '']})} className="text-sm text-emerald-600 hover:underline">
-                    + Add option
-                  </button>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Button type="button" variant="outline" onClick={() => setShowCreate(false)}>Cancel</Button>
-                <Button type="submit" disabled={creating}>{creating ? 'Creating…' : 'Create Poll'}</Button>
-              </div>
-            </form>
+          <CardHeader><CardTitle className="text-base">Create New Poll</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-1">
+              <Label>Question</Label>
+              <Input value={newPollQ} onChange={e => setNewPollQ(e.target.value)} placeholder="What do you want to ask?" />
+            </div>
+            <div className="space-y-2">
+              <Label>Options</Label>
+              {newPollOptions.map((opt, i) => (
+                <div key={i} className="flex gap-2">
+                  <Input value={opt} onChange={e => { const u = [...newPollOptions]; u[i] = e.target.value; setNewPollOptions(u); }} placeholder={`Option ${i + 1}`} />
+                  {newPollOptions.length > 2 && (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setNewPollOptions(newPollOptions.filter((_, j) => j !== i))}>✕</Button>
+                  )}
+                </div>
+              ))}
+              {newPollOptions.length < 6 && (
+                <Button type="button" variant="outline" size="sm" onClick={() => setNewPollOptions([...newPollOptions, ''])}>+ Add option</Button>
+              )}
+            </div>
+            <div className="space-y-1">
+              <Label>End date (optional)</Label>
+              <Input type="datetime-local" value={newPollEnds} onChange={e => setNewPollEnds(e.target.value)} />
+            </div>
+            <Button onClick={handleCreate} disabled={creating || !newPollQ || newPollOptions.filter(Boolean).length < 2}>
+              {creating ? 'Creating…' : 'Create Poll'}
+            </Button>
           </CardContent>
         </Card>
       )}
 
-      <div className="space-y-6">
-        {polls.length === 0 && <div className="text-center py-16 text-slate-400">No polls yet</div>}
-        {polls.map((poll: any) => {
-          const voted = hasVoted(poll);
-          const total = totalVotes(poll);
-          const chartData = poll.options.map((o: any) => ({ name: o.text, votes: o.votes.length }));
+      {polls.length === 0 ? (
+        <Card><CardContent className="py-16 text-center text-slate-400"><Vote size={40} className="mx-auto mb-3 opacity-40" /><p>No polls yet.</p></CardContent></Card>
+      ) : (
+        <div className="space-y-4">
+          {polls.map((poll: any) => {
+            const total = getTotal(poll);
+            const hasVoted = userHasVoted(poll);
+            const myVoteIndex = getMyVoteIndex(poll);
+            const isExpired = poll.endsAt && new Date(poll.endsAt) < new Date();
 
-          return (
-            <Card key={poll._id} className={!poll.isActive ? 'opacity-70' : ''}>
-              <CardHeader>
-                <div className="flex items-start justify-between">
-                  <div>
-                    <CardTitle className="text-lg">{poll.question}</CardTitle>
-                    <CardDescription>{total} vote{total !== 1 ? 's' : ''} · {poll.isActive ? 'Active' : 'Closed'}</CardDescription>
-                  </div>
-                  {['secretariat', 'admin'].includes(user?.role || '') && (
-                    <Button size="sm" variant="outline" onClick={async () => {
-                      const { data } = await api.patch(`/polls/${poll._id}/toggle`);
-                      setPolls(polls.map(p => p._id === poll._id ? data : p));
-                    }}>{poll.isActive ? 'Close' : 'Reopen'}</Button>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent>
-                {!voted && poll.isActive ? (
-                  <div className="space-y-2">
-                    {poll.options.map((opt: any, i: number) => (
-                      <button key={i} onClick={() => handleVote(poll._id, i)} disabled={voting === poll._id}
-                        className="w-full text-left px-4 py-3 rounded-xl border border-slate-200 hover:border-emerald-400 hover:bg-emerald-50 transition-all text-sm font-medium">
-                        {opt.text}
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {/* Bar chart */}
-                    <div className="h-48">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
-                          <XAxis type="number" tick={{ fontSize: 12 }} />
-                          <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 12 }} />
-                          <Tooltip />
-                          <Bar dataKey="votes" radius={[0, 6, 6, 0]}>
-                            {chartData.map((_: any, i: number) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
+            // Secretariat always sees results. Others see results after voting or when poll is closed.
+            const showResults = isSecretariat || hasVoted || !poll.isActive || isExpired;
+
+            return (
+              <Card key={poll._id} className={!poll.isActive ? 'opacity-70' : ''}>
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <CardTitle className="text-base">{poll.question}</CardTitle>
+                      <CardDescription className="flex items-center gap-3 mt-1">
+                        <span className="flex items-center gap-1"><Users size={12} /> {total} vote{total !== 1 ? 's' : ''}</span>
+                        {poll.endsAt && <span>Ends {new Date(poll.endsAt).toLocaleDateString()}</span>}
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${poll.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                          {poll.isActive ? 'Active' : 'Closed'}
+                        </span>
+                      </CardDescription>
                     </div>
-                    {/* Percentage breakdown */}
-                    <div className="space-y-2">
-                      {poll.options.map((opt: any, i: number) => {
-                        const pct = total > 0 ? Math.round((opt.votes.length / total) * 100) : 0;
-                        return (
-                          <div key={i} className="space-y-1">
-                            <div className="flex justify-between text-sm">
-                              <span className="text-slate-700">{opt.text}</span>
-                              <span className="text-slate-500">{opt.votes.length} ({pct}%)</span>
+                    {canManage && (
+                      <Button variant="ghost" size="sm" onClick={() => handleToggle(poll._id)} className="shrink-0 text-xs">
+                        {poll.isActive ? 'Close' : 'Reopen'}
+                      </Button>
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {poll.options.map((option: any, idx: number) => {
+                    const voteCount = option.votes?.length || 0;
+                    const pct = total > 0 ? Math.round((voteCount / total) * 100) : 0;
+                    const isMyVote = idx === myVoteIndex;
+
+                    if (showResults) {
+                      return (
+                        <div key={idx} className={`relative rounded-lg overflow-hidden border ${isMyVote ? 'border-emerald-300' : 'border-slate-200'}`}>
+                          <div className="absolute inset-0 bg-emerald-50 transition-all" style={{ width: `${pct}%` }} />
+                          <div className="relative flex items-center justify-between px-3 py-2.5">
+                            <div className="flex items-center gap-2">
+                              {isMyVote && <CheckCircle2 size={14} className="text-emerald-600" />}
+                              <span className="text-sm font-medium text-slate-800">{option.text}</span>
                             </div>
-                            <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                              <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: COLORS[i % COLORS.length] }} />
-                            </div>
+                            <span className="text-sm font-semibold text-slate-600">{pct}% ({voteCount})</span>
                           </div>
-                        );
-                      })}
-                    </div>
-                    {voted && <p className="text-xs text-slate-400 text-center">✓ You have voted</p>}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+                        </div>
+                      );
+                    }
+
+                    // Vote buttons — only shown to staff/CM/admin who haven't voted yet
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => handleVote(poll._id, idx)}
+                        className="w-full text-left px-3 py-2.5 rounded-lg border border-slate-200 hover:border-emerald-400 hover:bg-emerald-50 transition-colors text-sm font-medium text-slate-800"
+                      >
+                        {option.text}
+                      </button>
+                    );
+                  })}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

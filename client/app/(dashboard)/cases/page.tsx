@@ -1,19 +1,30 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import api from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import { Card, CardContent, CardHeader, CardTitle, Input, Select } from '@/components/ui/index';
 import { StatusBadge, SeverityBadge } from '@/components/StatusBadge';
-import { Search, Filter } from 'lucide-react';
+import { Search } from 'lucide-react';
 
 const STATUSES = ['', 'New', 'Assigned', 'In Progress', 'Pending', 'Resolved', 'Escalated'];
 const CATEGORIES = ['', 'Safety', 'Policy', 'Facilities', 'HR', 'Other'];
 const SEVERITIES = ['', 'Low', 'Medium', 'High'];
 
 export default function CasesPage() {
+  const { user } = useAuth();
+  const router = useRouter();
   const [cases, setCases] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({ status: '', category: '', severity: '', search: '' });
+
+  // Block CMs from this page — they only see their assigned cases
+  useEffect(() => {
+    if (user && user.role === 'case_manager') {
+      router.replace('/cases/my-cases');
+    }
+  }, [user, router]);
 
   const fetchCases = async () => {
     setLoading(true);
@@ -38,6 +49,8 @@ export default function CasesPage() {
       )
     : cases;
 
+  if (user?.role === 'case_manager') return null;
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-6">
@@ -47,7 +60,6 @@ export default function CasesPage() {
         </div>
       </div>
 
-      {/* Filters */}
       <Card className="mb-6">
         <CardContent className="pt-4 pb-4">
           <div className="flex flex-wrap gap-3 items-center">
@@ -71,7 +83,6 @@ export default function CasesPage() {
         </CardContent>
       </Card>
 
-      {/* Table */}
       <Card>
         <CardContent className="p-0">
           {loading ? (

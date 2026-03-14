@@ -10,7 +10,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
-// Submit a new case (all authenticated users)
+// Submit a new case (staff and admin only)
 router.post('/', auth, upload.array('attachments', 5), async (req, res) => {
   try {
     const { title, description, category, department, location, severity, isAnonymous } = req.body;
@@ -34,7 +34,7 @@ router.post('/', auth, upload.array('attachments', 5), async (req, res) => {
   }
 });
 
-// Get all cases (secretariat/admin)
+// Get all cases (secretariat/admin only)
 router.get('/', auth, requireRole('secretariat', 'admin'), async (req, res) => {
   try {
     const { status, category, department, severity } = req.query;
@@ -52,7 +52,7 @@ router.get('/', auth, requireRole('secretariat', 'admin'), async (req, res) => {
   }
 });
 
-// Get cases assigned to me (case_manager)
+// Get cases assigned to me (case_manager only)
 router.get('/my-cases', auth, requireRole('case_manager', 'secretariat', 'admin'), async (req, res) => {
   try {
     const cases = await Case.find({ assignedTo: req.user._id })
@@ -84,7 +84,6 @@ router.get('/:id', auth, async (req, res) => {
       .populate('assignedTo', 'name email')
       .populate('notes.author', 'name');
     if (!c) return res.status(404).json({ message: 'Case not found' });
-    // Staff can only see their own cases unless anonymous
     if (req.user.role === 'staff' && c.submittedBy?._id.toString() !== req.user._id.toString()) {
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -94,7 +93,7 @@ router.get('/:id', auth, async (req, res) => {
   }
 });
 
-// Assign case to case manager (secretariat)
+// Assign case to case manager (secretariat and admin only)
 router.patch('/:id/assign', auth, requireRole('secretariat', 'admin'), async (req, res) => {
   try {
     const { assignedTo } = req.body;
@@ -109,20 +108,37 @@ router.patch('/:id/assign', auth, requireRole('secretariat', 'admin'), async (re
   }
 });
 
-// Update case status / add note (case_manager, secretariat)
-router.patch('/:id/update', auth, requireRole('case_manager', 'secretariat', 'admin'), async (req, res) => {
+// Update case — CM and admin only
+// CM is blocked from editing a resolved case; admin always has full access
+router.patch('/:id/update', auth, requireRole('case_manager', 'admin'), async (req, res) => {
   try {
-    const { status, noteContent, impactSummary, actionTaken, whatChanged, isPublic } = req.body;
     const c = await Case.findById(req.params.id);
     if (!c) return res.status(404).json({ message: 'Not found' });
 
+    // CMs cannot edit a resolved case — admin bypasses this
+    if (req.user.role === 'case_manager' && c.status === 'Resolved') {
+      return res.status(403).json({ message: 'This case is resolved and locked.' });
+    }
+
+    const { status, note, impactSummary, actionTaken, whatChanged, isPublic } = req.body;
+
     if (status) {
       c.status = status;
-      if (status === 'Resolved') c.resolvedAt = new Date();
+      // When marking resolved: set timestamp and auto-publish to Hub impact feed
+      if (status === 'Resolved') {
+        c.resolvedAt = new Date();
+        c.isPublic = true;
+      }
       c.lastResponseAt = new Date();
     }
-    if (noteContent) {
-      c.notes.push({ author: req.user._id, authorName: req.user.name, content: noteContent });
+    if (note && note.text) {
+      c.notes.push({
+        author: req.user._id,
+        authorName: req.user.name,
+        text: note.text,
+        isInternal: note.isInternal || false,
+        addedAt: new Date(),
+      });
       c.lastResponseAt = new Date();
     }
     if (impactSummary !== undefined) c.impactSummary = impactSummary;
@@ -137,7 +153,7 @@ router.patch('/:id/update', auth, requireRole('case_manager', 'secretariat', 'ad
   }
 });
 
-// Analytics endpoint
+// Analytics (secretariat and admin)
 router.get('/analytics/summary', auth, requireRole('secretariat', 'admin'), async (req, res) => {
   try {
     const [byStatus, byCategory, byDepartment, hotspots] = await Promise.all([

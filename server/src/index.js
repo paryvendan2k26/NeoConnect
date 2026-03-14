@@ -7,7 +7,23 @@ const { startEscalationCron } = require('./utils/escalation');
 
 const app = express();
 
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Strip trailing slash and compare
+    const allowed = (process.env.CLIENT_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const incoming = origin.replace(/\/$/, '');
+    
+    if (incoming === allowed) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+}));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
